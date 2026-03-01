@@ -12,6 +12,7 @@ Example:
 import logging
 import os
 import re
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple, Type
 
 from agentscope.formatter import FormatterBase, OpenAIChatFormatter
@@ -25,6 +26,7 @@ from ..providers import (
     get_provider_chat_model,
     load_providers_json,
 )
+from ..utils.llm_logger import log_llm_request, log_llm_response
 
 if TYPE_CHECKING:
     from ..providers import ResolvedModelConfig
@@ -190,6 +192,9 @@ def create_model_and_formatter(
     # Create the formatter based on chat_model_class
     formatter = _create_formatter_instance(chat_model_class)
 
+    # Wrap the model with logging proxy to record all LLM I/O
+    model = LoggingChatModelProxy(model)
+
     return model, formatter
 
 
@@ -308,7 +313,10 @@ def _create_remote_model_instance(
         model_name,
         api_key=api_key,
         stream=True,
-        client_kwargs={"base_url": base_url},
+        client_kwargs={
+            "base_url": base_url,
+            "timeout": 300,  # 5-minute timeout to prevent indefinite hangs
+        },
     )
 
     return model
@@ -335,6 +343,85 @@ def _create_formatter_instance(
     return formatter_class()
 
 
+class LoggingChatModelProxy:
+    """A transparent proxy that wraps any ChatModelBase instance to log
+    all requests sent to the LLM and all responses received from it.
+
+    The log is written to ~/.copaw/llm_messages.log via a RotatingFileHandler
+    (see :mod:`copaw.utils.llm_logger`).
+
+    Attribute access and mutations are forwarded to the wrapped model so the
+    proxy is invisible to the rest of the codebase.
+    """
+
+    def __init__(self, model: ChatModelBase) -> None:
+        # Use object.__setattr__ to avoid triggering our own __setattr__
+        object.__setattr__(self, "_wrapped", model)
+
+    # ------------------------------------------------------------------
+    # Transparent attribute forwarding
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str):
+        return getattr(object.__getattribute__(self, "_wrapped"), name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "_wrapped":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(object.__getattribute__(self, "_wrapped"), name, value)
+
+    # ------------------------------------------------------------------
+    # Logging __call__
+    # ------------------------------------------------------------------
+
+    async def __call__(self, messages, tools=None, **kwargs):
+        """Intercept the model call to log request and response."""
+        wrapped = object.__getattribute__(self, "_wrapped")
+        model_name = getattr(wrapped, "model_name", "")
+
+        # Log the outgoing request
+        try:
+            log_llm_request(messages, model_name=model_name, tools=tools)
+        except Exception:
+            pass  # Never let logging break the agent
+
+        # Invoke the real model
+        if tools is not None:
+            result = await wrapped(messages, tools=tools, **kwargs)
+        else:
+            result = await wrapped(messages, **kwargs)
+
+        # Distinguish streaming (AsyncGenerator) from non-streaming
+        if isinstance(result, AsyncGenerator):
+            return self._wrap_stream(result, model_name)
+        else:
+            try:
+                log_llm_response(result, model_name=model_name)
+            except Exception:
+                pass
+            return result
+
+    async def _wrap_stream(
+        self,
+        stream: AsyncGenerator,
+        model_name: str,
+    ) -> AsyncGenerator:
+        """Wrap an async generator to capture the last chunk for logging."""
+        last_chunk = None
+        try:
+            async for chunk in stream:
+                last_chunk = chunk
+                yield chunk
+        finally:
+            # Log the final (complete) chunk which carries the full content
+            try:
+                log_llm_response(last_chunk, model_name=model_name)
+            except Exception:
+                pass
+
+
 __all__ = [
     "create_model_and_formatter",
+    "LoggingChatModelProxy",
 ]
