@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import logging.handlers
 from pathlib import Path
 
 from agentscope.pipeline import stream_printing_messages
@@ -18,8 +19,83 @@ from ...agents.memory import MemoryManager
 from ...agents.react_agent import CoPawAgent
 from ...config import load_config
 from ...constant import WORKING_DIR
+from ...utils.llm_logger import set_llm_log_session
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Dedicated debug logger for model I/O — writes to ~/.copaw/debug_model.log
+# ---------------------------------------------------------------------------
+_MODEL_DEBUG_LOG = Path.home() / ".copaw" / "debug_model.log"
+_MODEL_DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+
+_model_debug_logger = logging.getLogger("copaw.model_debug")
+_model_debug_logger.setLevel(logging.DEBUG)
+_model_debug_logger.propagate = False  # Don't leak into root logger
+if not _model_debug_logger.handlers:
+    _mh = logging.handlers.RotatingFileHandler(
+        str(_MODEL_DEBUG_LOG),
+        maxBytes=5 * 1024 * 1024,  # 5 MB
+        backupCount=2,
+        encoding="utf-8",
+    )
+    _mh.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    )
+    _model_debug_logger.addHandler(_mh)
+
+
+def _log_msg_blocks(label: str, msg) -> None:
+    """Log content blocks of a Msg for debugging encoding issues."""
+    content = getattr(msg, "content", None)
+    if not isinstance(content, list):
+        _model_debug_logger.debug(
+            "%s | role=%s content_type=str len=%s fffd=%s preview=%r",
+            label,
+            getattr(msg, "role", "?"),
+            len(str(content)),
+            str(content).count("\ufffd"),
+            str(content)[:120],
+        )
+        return
+    for i, blk in enumerate(content):
+        if not isinstance(blk, dict):
+            _model_debug_logger.debug(
+                "%s | block[%d] not-dict type=%s", label, i, type(blk)
+            )
+            continue
+        btype = blk.get("type", "?")
+        if btype == "thinking":
+            txt = blk.get("thinking", "")
+            _model_debug_logger.debug(
+                "%s | block[%d] type=thinking len=%d fffd=%d preview=%r",
+                label, i, len(txt), txt.count("\ufffd"), txt[:120],
+            )
+        elif btype == "text":
+            txt = blk.get("text", "")
+            _model_debug_logger.debug(
+                "%s | block[%d] type=text len=%d fffd=%d preview=%r",
+                label, i, len(txt), txt.count("\ufffd"), txt[:120],
+            )
+        else:
+            _model_debug_logger.debug(
+                "%s | block[%d] type=%s", label, i, btype
+            )
+
+
+def _log_agent_memory(label: str, agent) -> None:
+    """Log assistant messages in agent memory to check for encoding issues."""
+    try:
+        memory_content = agent.memory.content
+    except Exception as exc:
+        _model_debug_logger.debug("%s | cannot read memory: %s", label, exc)
+        return
+    for i, item in enumerate(memory_content):
+        msg = item[0] if isinstance(item, (list, tuple)) else item
+        role = getattr(msg, "role", "?")
+        if role != "assistant":
+            continue
+        _log_msg_blocks(f"{label}/memory[{i}]", msg)
 
 
 class AgentRunner(Runner):
@@ -80,6 +156,9 @@ class AgentRunner(Runner):
                 ),
             )
 
+            # Bind this session to the per-session LLM log file
+            set_llm_log_session(session_id)
+
             env_context = build_env_context(
                 session_id=session_id,
                 user_id=user_id,
@@ -137,10 +216,18 @@ class AgentRunner(Runner):
             # in the session state.
             agent.rebuild_sys_prompt()
 
+            _model_debug_logger.debug(
+                "=== QUERY START session=%s ===", session_id
+            )
             async for msg, last in stream_printing_messages(
                 agents=[agent],
                 coroutine_task=agent(msgs),
             ):
+                # CHECKPOINT-1: log only the final chunk of each message
+                if last:
+                    _log_msg_blocks(
+                        f"CP1:stream_final session={session_id}", msg
+                    )
                 yield msg, last
 
         except asyncio.CancelledError:
@@ -170,6 +257,10 @@ class AgentRunner(Runner):
             raise
         finally:
             if agent is not None:
+                # CHECKPOINT-2: inspect memory before session save
+                _log_agent_memory(
+                    f"CP2:pre_save session={session_id}", agent
+                )
                 await self.session.save_session_state(
                     session_id=session_id,
                     user_id=user_id,

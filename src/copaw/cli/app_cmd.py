@@ -51,6 +51,12 @@ from ..utils.logging import setup_logger, SuppressPathAccessLogFilter
     show_default=True,
     help="Path substrings to hide from uvicorn access log (repeatable).",
 )
+@click.option(
+    "--log-dir",
+    default="~/logs",
+    show_default=True,
+    help="Directory to write log file. Set to empty string to disable file logging.",
+)
 def app_cmd(
     host: str,
     port: int,
@@ -58,12 +64,13 @@ def app_cmd(
     workers: int,
     log_level: str,
     hide_access_paths: tuple[str, ...],
+    log_dir: str,
 ) -> None:
     """Run CoPaw FastAPI app."""
     # Persist last used host/port for other terminals
     write_last_api(host, port)
     os.environ[LOG_LEVEL_ENV] = log_level
-    setup_logger(log_level)
+    setup_logger(log_level, log_dir=log_dir or None)
     if log_level in ("debug", "trace"):
         from .main import log_init_timings
 

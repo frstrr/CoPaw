@@ -308,6 +308,15 @@ def _create_remote_model_instance(
         api_key = os.getenv("DASHSCOPE_API_KEY", "")
         base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
+    logger.debug(
+        "_create_remote_model_instance: model=%s base_url=%s "
+        "api_key_prefix=%s api_key_len=%d",
+        model_name,
+        base_url,
+        api_key[:8] if api_key else "(empty)",
+        len(api_key),
+    )
+
     # Instantiate model
     model = chat_model_class(
         model_name,
@@ -379,6 +388,21 @@ class LoggingChatModelProxy:
         """Intercept the model call to log request and response."""
         wrapped = object.__getattribute__(self, "_wrapped")
         model_name = getattr(wrapped, "model_name", "")
+
+        # Log model call with api_key prefix for debugging
+        try:
+            client = getattr(wrapped, "client", None)
+            api_key = getattr(client, "api_key", None) if client else None
+            base_url = getattr(client, "base_url", None) if client else None
+            logger.debug(
+                "LLM call: model=%s base_url=%s api_key_prefix=%s api_key_len=%d",
+                model_name,
+                base_url,
+                str(api_key)[:8] if api_key else "(none)",
+                len(str(api_key)) if api_key else 0,
+            )
+        except Exception:
+            pass
 
         # Log the outgoing request
         try:
