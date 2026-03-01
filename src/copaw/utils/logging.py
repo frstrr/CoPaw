@@ -3,6 +3,9 @@ import logging
 import os
 import platform
 import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 
 _LEVEL_MAP = {
@@ -93,8 +96,17 @@ class SuppressPathAccessLogFilter(logging.Filter):
             return True
 
 
-def setup_logger(level: int | str = logging.INFO):
-    """Configure logging to only output from this package (copaw), not deps."""
+def setup_logger(
+    level: int | str = logging.INFO,
+    log_dir: Optional[str] = None,
+):
+    """Configure logging to only output from this package (copaw), not deps.
+
+    Args:
+        level: Log level (int or string like 'info', 'debug').
+        log_dir: Directory to write log file. If None, no file logging.
+                 Defaults to ~/logs/ when called from app_cmd.
+    """
     log_format = "%(asctime)s | %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
@@ -102,6 +114,11 @@ def setup_logger(level: int | str = logging.INFO):
         level = _LEVEL_MAP.get(level.lower(), logging.INFO)
 
     formatter = ColorFormatter(log_format, datefmt)
+    # Plain formatter for file (no ANSI color codes)
+    plain_formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s",
+        datefmt=datefmt,
+    )
 
     # Suppress third-party: root has no handler and high level.
     root = logging.getLogger()
@@ -116,5 +133,20 @@ def setup_logger(level: int | str = logging.INFO):
         handler = logging.StreamHandler()
         handler.setFormatter(formatter)
         logger.addHandler(handler)
+
+    # Optional file handler
+    if log_dir:
+        try:
+            log_path = Path(log_dir).expanduser()
+            log_path.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            log_file = log_path / f"{timestamp}.log"
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setFormatter(plain_formatter)
+            file_handler.setLevel(level)
+            logger.addHandler(file_handler)
+            logger.info("Log file: %s", log_file)
+        except Exception as e:
+            logger.warning("Failed to set up file logging at %s: %s", log_dir, e)
 
     return logger
