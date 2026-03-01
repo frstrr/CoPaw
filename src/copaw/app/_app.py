@@ -136,6 +136,12 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
                 except Exception:
                     pass
             await runner.stop()
+            # Clean up any Playwright browser processes left by agent tools.
+            try:
+                from ..agents.tools import cleanup_browser
+                await cleanup_browser()
+            except Exception:
+                pass
 
 
 app = FastAPI(

@@ -593,6 +593,43 @@ async def _action_start(headed: bool = False) -> ToolResponse:
         )
 
 
+def _reset_state() -> None:
+    """Reset module-level browser state to initial values."""
+    _state["playwright"] = None
+    _state["browser"] = None
+    _state["context"] = None
+    _state["pages"].clear()
+    _state["refs"].clear()
+    _state["refs_frame"].clear()
+    _state["console_logs"].clear()
+    _state["network_requests"].clear()
+    _state["pending_dialogs"].clear()
+    _state["pending_file_choosers"].clear()
+    _state["current_page_id"] = None
+    _state["page_counter"] = 0
+    _state["headless"] = True
+
+
+async def cleanup_browser() -> None:
+    """Gracefully close Playwright browser and all child processes.
+
+    Safe to call at application shutdown even if no browser is running.
+    """
+    if _state["browser"] is None:
+        return
+    try:
+        await _state["browser"].close()
+    except Exception:
+        logger.debug("browser close error during cleanup", exc_info=True)
+    try:
+        if _state["playwright"] is not None:
+            await _state["playwright"].stop()
+    except Exception:
+        logger.debug("playwright stop error during cleanup", exc_info=True)
+    finally:
+        _reset_state()
+
+
 async def _action_stop() -> ToolResponse:
     if _state["browser"] is None:
         return _tool_response(
@@ -615,19 +652,7 @@ async def _action_stop() -> ToolResponse:
             ),
         )
     finally:
-        _state["playwright"] = None
-        _state["browser"] = None
-        _state["context"] = None
-        _state["pages"].clear()
-        _state["refs"].clear()
-        _state["refs_frame"].clear()
-        _state["console_logs"].clear()
-        _state["network_requests"].clear()
-        _state["pending_dialogs"].clear()
-        _state["pending_file_choosers"].clear()
-        _state["current_page_id"] = None
-        _state["page_counter"] = 0
-        _state["headless"] = True  # next start defaults to background
+        _reset_state()
     return _tool_response(
         json.dumps(
             {"ok": True, "message": "Browser stopped"},
