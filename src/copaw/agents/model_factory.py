@@ -11,6 +11,7 @@ Example:
 
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple, Type
 
 from agentscope.formatter import FormatterBase, OpenAIChatFormatter
@@ -247,6 +248,34 @@ def _get_chat_model_class_from_provider() -> Type[ChatModelBase]:
     return chat_model_class
 
 
+def _normalize_base_url(base_url: str) -> str:
+    """Ensure base_url ends with a versioned path for OpenAI-compatible APIs.
+
+    The OpenAI Python client appends paths like /chat/completions directly
+    to base_url, so base_url must already contain the version prefix (e.g.
+    /v1). If the URL doesn't end with a version segment, /v1 is appended
+    automatically so users don't need to add it manually.
+
+    Args:
+        base_url: The base URL to normalize
+
+    Returns:
+        Normalized base URL ending with a version segment
+    """
+    if not base_url:
+        return base_url
+    url = base_url.rstrip("/")
+    # If the URL already ends with a version segment (e.g. /v1, /v2,
+    # /compatible-mode/v1), leave it unchanged.
+    if re.search(r"/v\d+$", url):
+        return url
+    logger.debug(
+        "base_url '%s' has no version segment, appending /v1",
+        url,
+    )
+    return url + "/v1"
+
+
 def _create_remote_model_instance(
     llm_cfg: Optional["ResolvedModelConfig"],
     chat_model_class: Type[ChatModelBase],
@@ -264,7 +293,7 @@ def _create_remote_model_instance(
     if llm_cfg and llm_cfg.api_key:
         model_name = llm_cfg.model or "qwen3-max"
         api_key = llm_cfg.api_key
-        base_url = llm_cfg.base_url
+        base_url = _normalize_base_url(llm_cfg.base_url)
     else:
         logger.warning(
             "No active LLM configured — "
