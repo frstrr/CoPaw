@@ -56,15 +56,22 @@ async def execute_shell_command(
         )
 
         try:
-            await asyncio.wait_for(proc.wait(), timeout=timeout)
-            stdout, stderr = await proc.communicate()
+            # Use communicate() directly to avoid pipe-buffer deadlock:
+            # proc.wait() does not drain stdout/stderr; if the subprocess
+            # writes more than the OS pipe buffer (~64 KB) it blocks
+            # waiting for a reader, so proc.wait() would never return.
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
             encoding = locale.getpreferredencoding(False) or "utf-8"
             stdout_str = stdout.decode(encoding, errors="replace").strip("\n")
             stderr_str = stderr.decode(encoding, errors="replace").strip("\n")
             returncode = proc.returncode
 
         except asyncio.TimeoutError:
-            # Handle timeout
+            # Handle timeout – communicate() was cancelled so the streams
+            # are in an indeterminate state; just kill the process and
+            # report the timeout.
             stderr_suffix = (
                 f"⚠️ TimeoutError: The command execution exceeded "
                 f"the timeout of {timeout} seconds. "
@@ -72,6 +79,8 @@ async def execute_shell_command(
                 f"requires more time to complete."
             )
             returncode = -1
+            stdout_str = ""
+            stderr_str = stderr_suffix
             try:
                 proc.terminate()
                 # Wait a bit for graceful termination
@@ -81,22 +90,8 @@ async def execute_shell_command(
                     # Force kill if graceful termination fails
                     proc.kill()
                     await proc.wait()
-
-                stdout, stderr = await proc.communicate()
-                encoding = locale.getpreferredencoding(False) or "utf-8"
-                stdout_str = stdout.decode(encoding, errors="replace").strip(
-                    "\n",
-                )
-                stderr_str = stderr.decode(encoding, errors="replace").strip(
-                    "\n",
-                )
-                if stderr_str:
-                    stderr_str += f"\n{stderr_suffix}"
-                else:
-                    stderr_str = stderr_suffix
             except ProcessLookupError:
-                stdout_str = ""
-                stderr_str = stderr_suffix
+                pass
 
         # Format the response in a human-friendly way
         if returncode == 0:
