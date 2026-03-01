@@ -90,11 +90,18 @@ def _parse_new_format(raw: dict):
         if isinstance(llm_raw, dict)
         else ModelSlotConfig()
     )
-    return providers, custom_providers, active_llm
+    fallback_llms: list[ModelSlotConfig] = []
+    for item in raw.get("fallback_llms") or []:
+        if isinstance(item, dict):
+            try:
+                fallback_llms.append(ModelSlotConfig.model_validate(item))
+            except Exception:
+                pass
+    return providers, custom_providers, active_llm, fallback_llms
 
 
 def _parse_legacy_format(raw: dict):
-    """Returns ``(providers, custom_providers, active_llm)``."""
+    """Returns ``(providers, custom_providers, active_llm, fallback_llms)``."""
     providers: dict[str, ProviderSettings] = {}
     custom_providers: dict[str, CustomProviderData] = {}
     old_active = raw.get("active_provider", "")
@@ -114,7 +121,7 @@ def _parse_legacy_format(raw: dict):
         if old_active
         else ModelSlotConfig()
     )
-    return providers, custom_providers, active_llm
+    return providers, custom_providers, active_llm, []
 
 
 def _validate_active_llm(data: ProvidersData) -> None:
@@ -171,17 +178,19 @@ def load_providers_json(path: Optional[Path] = None) -> ProvidersData:
     custom_providers: dict[str, CustomProviderData] = {}
     active_llm = ModelSlotConfig()
 
+    fallback_llms: list[ModelSlotConfig] = []
+
     if path.is_file():
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 raw: dict = json.load(fh)
             if "providers" in raw and isinstance(raw["providers"], dict):
-                providers, custom_providers, active_llm = _parse_new_format(
-                    raw,
+                providers, custom_providers, active_llm, fallback_llms = (
+                    _parse_new_format(raw)
                 )
             else:
-                providers, custom_providers, active_llm = _parse_legacy_format(
-                    raw,
+                providers, custom_providers, active_llm, fallback_llms = (
+                    _parse_legacy_format(raw)
                 )
         except (json.JSONDecodeError, ValueError):
             providers = {}
@@ -195,6 +204,7 @@ def load_providers_json(path: Optional[Path] = None) -> ProvidersData:
         providers=providers,
         custom_providers=custom_providers,
         active_llm=active_llm,
+        fallback_llms=fallback_llms,
     )
     _validate_active_llm(data)
     save_providers_json(data, path)
@@ -219,6 +229,9 @@ def save_providers_json(
             for pid, cpd in data.custom_providers.items()
         },
         "active_llm": data.active_llm.model_dump(mode="json"),
+        "fallback_llms": [
+            slot.model_dump(mode="json") for slot in data.fallback_llms
+        ],
     }
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, ensure_ascii=False)
@@ -302,6 +315,54 @@ def _resolve_slot(
 def get_active_llm_config() -> Optional[ResolvedModelConfig]:
     data = load_providers_json()
     return _resolve_slot(data.active_llm, data)
+
+
+def get_fallback_llm_configs() -> list[ResolvedModelConfig]:
+    """Return resolved configs for all configured fallback models."""
+    data = load_providers_json()
+    result: list[ResolvedModelConfig] = []
+    for slot in data.fallback_llms:
+        cfg = _resolve_slot(slot, data)
+        if cfg is not None:
+            result.append(cfg)
+    return result
+
+
+def add_fallback_llm(provider_id: str, model: str) -> ProvidersData:
+    """Append a new fallback slot at the end of the list."""
+    data = load_providers_json()
+    defn = PROVIDERS.get(provider_id)
+    if defn is None:
+        raise ValueError(f"Provider '{provider_id}' not found.")
+    if not data.is_configured(defn):
+        raise ValueError(
+            f"Provider '{provider_id}' is not configured (missing API key / base URL)."
+        )
+    if not model:
+        raise ValueError("model must not be empty.")
+    data.fallback_llms.append(ModelSlotConfig(provider_id=provider_id, model=model))
+    save_providers_json(data)
+    return data
+
+
+def remove_fallback_llm(index: int) -> ProvidersData:
+    """Remove the fallback slot at *index* (0-based)."""
+    data = load_providers_json()
+    if index < 0 or index >= len(data.fallback_llms):
+        raise ValueError(
+            f"Index {index} out of range (list has {len(data.fallback_llms)} items)."
+        )
+    data.fallback_llms.pop(index)
+    save_providers_json(data)
+    return data
+
+
+def set_fallback_llms(slots: list[ModelSlotConfig]) -> ProvidersData:
+    """Replace the entire fallback list (used for reordering)."""
+    data = load_providers_json()
+    data.fallback_llms = list(slots)
+    save_providers_json(data)
+    return data
 
 
 # -- Utilities --

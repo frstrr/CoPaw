@@ -65,6 +65,7 @@ class CoPawAgent(ReActAgent):
         memory_manager: MemoryManager | None = None,
         max_iters: int = 50,
         max_input_length: int = 128 * 1024,  # 128K = 131072 tokens
+        fallback_cfgs: Optional[List[Any]] = None,
     ):
         """Initialize CoPawAgent.
 
@@ -83,6 +84,7 @@ class CoPawAgent(ReActAgent):
         self._env_context = env_context
         self._max_input_length = max_input_length
         self._mcp_clients = mcp_clients or []
+        self._fallback_cfgs = fallback_cfgs or []
 
         # Memory compaction threshold: configurable ratio of max_input_length
         self._memory_compact_threshold = int(
@@ -99,7 +101,9 @@ class CoPawAgent(ReActAgent):
         sys_prompt = self._build_sys_prompt()
 
         # Create model and formatter using factory method
-        model, formatter = create_model_and_formatter()
+        model, formatter = create_model_and_formatter(
+            fallback_cfgs=self._fallback_cfgs if self._fallback_cfgs else None,
+        )
 
         # Initialize parent ReActAgent
         super().__init__(

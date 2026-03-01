@@ -84,6 +84,10 @@ class ProvidersData(BaseModel):
         default_factory=dict,
     )
     active_llm: ModelSlotConfig = Field(default_factory=ModelSlotConfig)
+    fallback_llms: List[ModelSlotConfig] = Field(
+        default_factory=list,
+        description="Ordered list of fallback models tried when active_llm fails.",
+    )
 
     def get_credentials(self, provider_id: str) -> tuple[str, str]:
         """Return ``(base_url, api_key)`` for *provider_id*."""
@@ -130,6 +134,7 @@ class ProviderInfo(BaseModel):
 
 class ActiveModelsInfo(BaseModel):
     active_llm: ModelSlotConfig
+    fallback_llms: List[ModelSlotConfig] = Field(default_factory=list)
 
 
 class ResolvedModelConfig(BaseModel):

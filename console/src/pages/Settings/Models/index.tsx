@@ -7,6 +7,7 @@ import {
   LoadingState,
   ProviderCard,
   ModelsSection,
+  FallbackModelsSection,
   CustomProviderModal,
 } from "./components";
 import { useTranslation } from "react-i18next";
@@ -70,6 +71,11 @@ function ModelsPage() {
           <ModelsSection
             providers={providers}
             activeModels={activeModels}
+            onSaved={fetchAll}
+          />
+          <FallbackModelsSection
+            providers={providers}
+            fallbackLlms={activeModels?.fallback_llms ?? []}
             onSaved={fetchAll}
           />
 

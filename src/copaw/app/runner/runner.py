@@ -175,12 +175,16 @@ class AgentRunner(Runner):
             max_iters = config.agents.running.max_iters
             max_input_length = config.agents.running.max_input_length
 
+            from ...providers import get_fallback_llm_configs
+            fallback_cfgs = get_fallback_llm_configs()
+
             agent = CoPawAgent(
                 env_context=env_context,
                 mcp_clients=mcp_clients,
                 memory_manager=self.memory_manager,
                 max_iters=max_iters,
                 max_input_length=max_input_length,
+                fallback_cfgs=fallback_cfgs,
             )
             await agent.register_mcp_clients()
             agent.set_console_output_enabled(enabled=False)

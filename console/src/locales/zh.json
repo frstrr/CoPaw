@@ -323,7 +323,19 @@
     "localCancelDownloadConfirm": "确定取消下载 \"{{repo}}\"？",
     "localDownloadCancelled": "下载已取消",
     "localCancelDownloadFailed": "取消下载失败",
-    "ollamaModelNamePlaceholder": "例如 mistral:7b, qwen3:8b"
+    "ollamaModelNamePlaceholder": "例如 mistral:7b, qwen3:8b",
+    "fallbackTitle": "备用模型",
+    "fallbackDescription": "当主力模型出现故障（5xx、鉴权失败、超时、限流）时，按顺序尝试以下备用模型。",
+    "fallbackEmpty": "暂未配置备用模型，请在下方添加。",
+    "fallbackAdd": "添加备用",
+    "fallbackAdded": "备用模型已添加",
+    "fallbackAddFailed": "添加备用模型失败",
+    "fallbackRemoved": "备用模型已移除",
+    "fallbackRemoveFailed": "移除备用模型失败",
+    "fallbackReorderFailed": "重新排序失败",
+    "fallbackOrder": "备用 #{{index}}",
+    "fallbackSelectProvider": "选择提供商",
+    "fallbackSelectModel": "选择模型"
   },
   "agentConfig": {
     "title": "运行配置",

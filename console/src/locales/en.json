@@ -323,7 +323,19 @@
     "localCancelDownloadConfirm": "Cancel download of \"{{repo}}\"?",
     "localDownloadCancelled": "Download cancelled",
     "localCancelDownloadFailed": "Failed to cancel download",
-    "ollamaModelNamePlaceholder": "e.g. mistral:7b, qwen3:8b"
+    "ollamaModelNamePlaceholder": "e.g. mistral:7b, qwen3:8b",
+    "fallbackTitle": "Fallback Models",
+    "fallbackDescription": "If the primary model fails (5xx, auth error, timeout, rate limit), these models are tried in order.",
+    "fallbackEmpty": "No fallback models configured. Add one below.",
+    "fallbackAdd": "Add Fallback",
+    "fallbackAdded": "Fallback model added",
+    "fallbackAddFailed": "Failed to add fallback model",
+    "fallbackRemoved": "Fallback model removed",
+    "fallbackRemoveFailed": "Failed to remove fallback model",
+    "fallbackReorderFailed": "Failed to reorder fallback models",
+    "fallbackOrder": "#{{index}} Fallback",
+    "fallbackSelectProvider": "Select provider",
+    "fallbackSelectModel": "Select model"
   },
   "agentConfig": {
     "title": "Configuration",

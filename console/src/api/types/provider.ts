@@ -30,6 +30,7 @@ export interface ModelSlotConfig {
 
 export interface ActiveModelsInfo {
   active_llm: ModelSlotConfig;
+  fallback_llms: ModelSlotConfig[];
 }
 
 export interface ModelSlotRequest {

@@ -160,8 +160,93 @@ def _create_file_block_support_formatter(
     return FileBlockSupportFormatter
 
 
+# Errors that warrant trying the next fallback model.
+# BadRequestError (400) is intentionally excluded: those are content issues
+# that will fail on every model the same way.
+_FALLBACK_ERRORS: tuple[type[Exception], ...] = ()
+try:
+    from openai import (
+        InternalServerError as _OAIInternalServerError,
+        AuthenticationError as _OAIAuthenticationError,
+        RateLimitError as _OAIRateLimitError,
+        APIConnectionError as _OAIAPIConnectionError,
+        APITimeoutError as _OAIAPITimeoutError,
+    )
+    _FALLBACK_ERRORS = (
+        _OAIInternalServerError,
+        _OAIAuthenticationError,
+        _OAIRateLimitError,
+        _OAIAPIConnectionError,
+        _OAIAPITimeoutError,
+    )
+except ImportError:
+    pass
+
+
+class FallbackChatModelProxy:
+    """Proxy that holds an ordered list of model instances.
+
+    On each ``__call__``, it tries models in order.  If a call raises a
+    *recoverable* error (5xx, auth failure, rate-limit, connection / timeout)
+    it logs a warning and tries the next model.  If all models fail, the
+    last exception is re-raised.
+
+    All attribute accesses are forwarded to the *primary* (first) model so
+    the proxy looks identical to a plain ``ChatModelBase`` from the outside.
+    """
+
+    def __init__(self, models: list) -> None:
+        if not models:
+            raise ValueError("FallbackChatModelProxy requires at least one model.")
+        # Use object.__setattr__ to avoid triggering our own __setattr__
+        object.__setattr__(self, "_models", models)
+
+    # ------------------------------------------------------------------
+    # Transparent attribute forwarding to the primary model
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str):
+        return getattr(object.__getattribute__(self, "_models")[0], name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "_models":
+            object.__setattr__(self, name, value)
+        else:
+            setattr(object.__getattribute__(self, "_models")[0], name, value)
+
+    # ------------------------------------------------------------------
+    # Fallback __call__
+    # ------------------------------------------------------------------
+
+    async def __call__(self, messages, tools=None, **kwargs):
+        models = object.__getattribute__(self, "_models")
+        last_exc: Exception | None = None
+        for i, model in enumerate(models):
+            try:
+                if tools is not None:
+                    return await model(messages, tools=tools, **kwargs)
+                return await model(messages, **kwargs)
+            except Exception as exc:
+                if _FALLBACK_ERRORS and isinstance(exc, _FALLBACK_ERRORS):
+                    label = "primary" if i == 0 else f"fallback-{i}"
+                    logger.warning(
+                        "FallbackChatModelProxy: %s model failed (%s: %s), "
+                        "trying next model.",
+                        label,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    last_exc = exc
+                    continue
+                # Non-recoverable error — raise immediately
+                raise
+        assert last_exc is not None
+        raise last_exc
+
+
 def create_model_and_formatter(
     llm_cfg: Optional["ResolvedModelConfig"] = None,
+    fallback_cfgs: Optional[list["ResolvedModelConfig"]] = None,
 ) -> Tuple[ChatModelBase, FormatterBase]:
     """Factory method to create model and formatter instances.
 
@@ -192,8 +277,27 @@ def create_model_and_formatter(
     # Create the formatter based on chat_model_class
     formatter = _create_formatter_instance(chat_model_class)
 
-    # Wrap the model with logging proxy to record all LLM I/O
-    model = LoggingChatModelProxy(model)
+    # Wrap primary model with logging proxy
+    primary = LoggingChatModelProxy(model)
+
+    # Build fallback models (if any)
+    fallback_models: list[LoggingChatModelProxy] = []
+    for fb_cfg in (fallback_cfgs or []):
+        try:
+            fb_model, _ = _create_model_instance(fb_cfg)
+            fallback_models.append(LoggingChatModelProxy(fb_model))
+        except Exception as exc:
+            logger.warning(
+                "create_model_and_formatter: failed to create fallback model %s/%s: %s",
+                getattr(fb_cfg, "model", "?"),
+                getattr(fb_cfg, "base_url", "?"),
+                exc,
+            )
+
+    if fallback_models:
+        model = FallbackChatModelProxy([primary] + fallback_models)
+    else:
+        model = primary
 
     return model, formatter
 

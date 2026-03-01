@@ -22,15 +22,19 @@ from .registry import (
     sync_local_models,
 )
 from .store import (
+    add_fallback_llm,
     add_model,
     create_custom_provider,
     delete_custom_provider,
     get_active_llm_config,
+    get_fallback_llm_configs,
     load_providers_json,
     mask_api_key,
+    remove_fallback_llm,
     remove_model,
     save_providers_json,
     set_active_llm,
+    set_fallback_llms,
     update_provider_settings,
 )
 
@@ -51,14 +55,18 @@ __all__ = [
     "is_builtin",
     "list_providers",
     "sync_local_models",
+    "add_fallback_llm",
     "add_model",
     "create_custom_provider",
     "delete_custom_provider",
     "get_active_llm_config",
+    "get_fallback_llm_configs",
     "load_providers_json",
     "mask_api_key",
+    "remove_fallback_llm",
     "remove_model",
     "save_providers_json",
     "set_active_llm",
+    "set_fallback_llms",
     "update_provider_settings",
 ]

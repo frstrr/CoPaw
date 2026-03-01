@@ -11,9 +11,11 @@ from pydantic import BaseModel, Field
 from ...providers import (
     ActiveModelsInfo,
     ModelInfo,
+    ModelSlotConfig,
     ProviderDefinition,
     ProviderInfo,
     ProvidersData,
+    add_fallback_llm,
     add_model,
     create_custom_provider,
     delete_custom_provider,
@@ -21,8 +23,10 @@ from ...providers import (
     list_providers,
     load_providers_json,
     mask_api_key,
+    remove_fallback_llm,
     remove_model,
     set_active_llm,
+    set_fallback_llms,
     update_provider_settings,
 )
 
@@ -210,7 +214,74 @@ async def remove_model_endpoint(
 )
 async def get_active_models() -> ActiveModelsInfo:
     data = load_providers_json()
-    return ActiveModelsInfo(active_llm=data.active_llm)
+    return ActiveModelsInfo(
+        active_llm=data.active_llm,
+        fallback_llms=data.fallback_llms,
+    )
+
+
+# ---- Fallback LLM CRUD ----
+
+
+@router.get(
+    "/fallbacks",
+    response_model=List[ModelSlotConfig],
+    summary="Get fallback LLM list",
+)
+async def get_fallbacks() -> List[ModelSlotConfig]:
+    data = load_providers_json()
+    return data.fallback_llms
+
+
+@router.post(
+    "/fallbacks",
+    response_model=List[ModelSlotConfig],
+    summary="Add a fallback LLM",
+    status_code=201,
+)
+async def add_fallback(
+    body: ModelSlotRequest = Body(...),
+) -> List[ModelSlotConfig]:
+    provider = get_provider(body.provider_id)
+    if provider is None:
+        raise HTTPException(
+            404, detail=f"Provider '{body.provider_id}' not found"
+        )
+    if not body.model:
+        raise HTTPException(400, detail="model must not be empty.")
+    try:
+        data = add_fallback_llm(body.provider_id, body.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return data.fallback_llms
+
+
+@router.put(
+    "/fallbacks",
+    response_model=List[ModelSlotConfig],
+    summary="Replace the fallback LLM list (used for reordering)",
+)
+async def replace_fallbacks(
+    body: List[ModelSlotRequest] = Body(...),
+) -> List[ModelSlotConfig]:
+    slots = [ModelSlotConfig(provider_id=r.provider_id, model=r.model) for r in body]
+    data = set_fallback_llms(slots)
+    return data.fallback_llms
+
+
+@router.delete(
+    "/fallbacks/{index}",
+    response_model=List[ModelSlotConfig],
+    summary="Remove a fallback LLM by index",
+)
+async def remove_fallback(
+    index: int = Path(..., description="0-based index of the fallback to remove"),
+) -> List[ModelSlotConfig]:
+    try:
+        data = remove_fallback_llm(index)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return data.fallback_llms
 
 
 @router.put(

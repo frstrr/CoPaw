@@ -3,6 +3,7 @@ import type {
   ProviderInfo,
   ProviderConfigRequest,
   ActiveModelsInfo,
+  ModelSlotConfig,
   ModelSlotRequest,
   CreateCustomProviderRequest,
   AddModelRequest,
@@ -54,4 +55,25 @@ export const providerApi = {
       )}`,
       { method: "DELETE" },
     ),
+
+  /* ---- Fallback LLM CRUD ---- */
+
+  getFallbacks: () => request<ModelSlotConfig[]>("/models/fallbacks"),
+
+  addFallback: (body: ModelSlotRequest) =>
+    request<ModelSlotConfig[]>("/models/fallbacks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  setFallbacks: (body: ModelSlotRequest[]) =>
+    request<ModelSlotConfig[]>("/models/fallbacks", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  removeFallback: (index: number) =>
+    request<ModelSlotConfig[]>(`/models/fallbacks/${index}`, {
+      method: "DELETE",
+    }),
 };
