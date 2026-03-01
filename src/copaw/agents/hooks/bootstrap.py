@@ -55,14 +55,10 @@ class BootstrapHook:
         """
         try:
             bootstrap_path = self.working_dir / "BOOTSTRAP.md"
-            bootstrap_completed_flag = (
-                self.working_dir / ".bootstrap_completed"
-            )
 
-            # Check if bootstrap has already been triggered before
-            if bootstrap_completed_flag.exists():
-                return None
-
+            # BOOTSTRAP.md 本身即完成标志：LLM 完成 bootstrap 后会删除该文件。
+            # 不使用单独的 .bootstrap_completed 标志文件，避免 LLM 调用失败时
+            # 标志文件被提前创建，导致后续重启后 bootstrap 无法再次触发的问题。
             if not bootstrap_path.exists():
                 return None
 
@@ -88,10 +84,6 @@ class BootstrapHook:
                     break
 
             logger.debug("Bootstrap guidance prepended to first user message")
-
-            # Create completion flag to prevent repeated triggering
-            bootstrap_completed_flag.touch()
-            logger.debug("Created bootstrap completion flag")
 
         except Exception as e:
             logger.error(
