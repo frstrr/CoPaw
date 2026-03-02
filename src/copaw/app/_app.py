@@ -164,6 +164,13 @@ def _resolve_console_static_dir() -> str:
     candidate = pkg_dir / "console"
     if candidate.is_dir() and (candidate / "index.html").exists():
         return str(candidate)
+    # Dev mode: source tree layout is <repo>/src/copaw/app/_app.py,
+    # so console/dist is at <repo>/console/dist regardless of CWD.
+    repo_root = pkg_dir.parent.parent
+    for subdir in ("console/dist", "console_dist"):
+        candidate = repo_root / subdir
+        if candidate.is_dir() and (candidate / "index.html").exists():
+            return str(candidate)
     cwd = Path(os.getcwd())
     for subdir in ("console/dist", "console_dist"):
         candidate = cwd / subdir

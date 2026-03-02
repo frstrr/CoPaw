@@ -47,6 +47,12 @@ async def read_file(  # pylint: disable=too-many-return-statements
             Last line to read (1-based, inclusive).
     """
 
+    # Coerce empty-string args to None (LLM sometimes passes "" instead of null)
+    if isinstance(start_line, str):
+        start_line = int(start_line) if start_line.strip() else None
+    if isinstance(end_line, str):
+        end_line = int(end_line) if end_line.strip() else None
+
     file_path = _resolve_file_path(file_path)
 
     if not os.path.exists(file_path):
