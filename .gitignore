@@ -79,6 +79,5 @@ logs/
 # vibe coding
 .claude
 openspec
-/AGENTS.md
 CLAUDE.md
 *.tmp
