@@ -65,6 +65,7 @@ async def list_skills() -> list[SkillSpec]:
         skills_spec.append(
             SkillSpec(
                 name=skill.name,
+                description=skill.description,
                 content=skill.content,
                 source=skill.source,
                 path=skill.path,
@@ -84,6 +85,7 @@ async def get_available_skills() -> list[SkillSpec]:
         skills_spec.append(
             SkillSpec(
                 name=skill.name,
+                description=skill.description,
                 content=skill.content,
                 source=skill.source,
                 path=skill.path,

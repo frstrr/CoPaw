@@ -40,6 +40,7 @@ class SkillInfo(BaseModel):
     """
 
     name: str
+    description: str = ""
     content: str
     source: str  # "builtin", "customized", or "active"
     path: str
@@ -382,6 +383,14 @@ def _read_skills_from_dir(
         try:
             content = skill_md.read_text(encoding="utf-8")
 
+            # Parse description from YAML Front Matter
+            description = ""
+            try:
+                post = frontmatter.loads(content)
+                description = post.get("description", "") or ""
+            except Exception:
+                pass
+
             # Build references directory tree
             references = {}
             references_dir = skill_dir / "references"
@@ -397,6 +406,7 @@ def _read_skills_from_dir(
             skills.append(
                 SkillInfo(
                     name=skill_dir.name,
+                    description=description,
                     content=content,
                     source=source,
                     path=str(skill_dir),
