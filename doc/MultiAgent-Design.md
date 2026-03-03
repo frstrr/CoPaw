@@ -930,7 +930,202 @@ Agent A 结果 → Orchestrator → 将 A 的结果作为指令一部分发给 A
 
 ---
 
-## 8. 后续扩展方向
+## 8. 分布式扩展预留设计
+
+### 8.1 背景
+
+当前方案（v0.2）采用**单进程内多 Agent** 架构，所有 Agent 在同一 Python 进程中通过 `asyncio` 并发执行。
+这对个人助手场景足够，但未来可能需要扩展到以下场景：
+
+- **企业/团队部署**：多人共享 Agent 集群，按需弹性扩缩
+- **异构硬件**：代码 Agent 跑在 GPU 机器，文本 Agent 跑在轻量实例
+- **跨机器部署**：单机资源不足时，将 Agent 分布到多台机器
+- **故障隔离**：某个 Agent 崩溃不影响其他 Agent 和 Orchestrator
+
+为避免将来迁移时大规模重构，v0.2 在实现中预留 **AgentTransport 抽象层**。
+
+### 8.2 AgentTransport 抽象
+
+Orchestrator 与子 Agent 之间的通信统一通过 `AgentTransport` 接口，不直接依赖进程内调用：
+
+```python
+# src/copaw/agents/transport.py
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+
+
+class RunStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class RunResult:
+    run_id: str
+    agent_name: str
+    status: RunStatus
+    result: str = ""
+    error: str = ""
+
+
+class AgentTransport(ABC):
+    """Agent 间通信的抽象层。
+
+    Orchestrator 通过此接口与子 Agent 通信，
+    具体实现可以是进程内调用、HTTP、WebSocket、消息队列等。
+    """
+
+    @abstractmethod
+    async def send(
+        self, agent_name: str, instruction: str, timeout: int = 300
+    ) -> RunResult:
+        """同步发送指令并等待子 Agent 完成。"""
+        ...
+
+    @abstractmethod
+    async def spawn(
+        self, agent_name: str, instruction: str
+    ) -> str:
+        """非阻塞发送指令，立即返回 run_id。"""
+        ...
+
+    @abstractmethod
+    async def query(self, run_id: str) -> RunResult:
+        """查询 spawn 任务的状态和结果。"""
+        ...
+
+    @abstractmethod
+    async def cancel(self, run_id: str) -> bool:
+        """取消一个正在运行的 spawn 任务。"""
+        ...
+
+    @abstractmethod
+    async def list_agents(self) -> list[dict]:
+        """列出当前可用的子 Agent。"""
+        ...
+```
+
+### 8.3 当前实现：LocalTransport
+
+v0.2 阶段只实现 `LocalTransport`，即进程内直接调用子 Agent：
+
+```python
+# src/copaw/agents/transport.py
+
+class LocalTransport(AgentTransport):
+    """进程内 Agent 通信（v0.2 默认实现）。
+
+    直接在当前进程中创建 CoPawAgent 实例并调用 reply()，
+    通过 asyncio.Semaphore 控制并发，asyncio.wait_for 控制超时。
+    """
+
+    def __init__(
+        self,
+        sub_agent_defs: list[SubAgentDefinition],
+        concurrency: ConcurrencyConfig,
+    ):
+        self._sub_agent_defs = sub_agent_defs
+        self._concurrency = concurrency
+        self._semaphore = asyncio.Semaphore(
+            concurrency.max_global_concurrent
+        )
+        self._spawn_runs: dict[str, asyncio.Task] = {}
+
+    async def send(self, agent_name, instruction, timeout=300):
+        async with self._semaphore:
+            result = await asyncio.wait_for(
+                self._run_local(agent_name, instruction),
+                timeout=timeout,
+            )
+            return RunResult(
+                run_id="", agent_name=agent_name,
+                status=RunStatus.COMPLETED, result=result,
+            )
+
+    async def _run_local(self, agent_name, instruction):
+        from .sub_agent_service import SubAgentService
+        agent_def = self._find_def(agent_name)
+        sub_agent = SubAgentService.build_agent_instance(
+            name=agent_name,
+            max_iters=agent_def.max_iters,
+            tool_policy=agent_def.tool_policy,
+        )
+        msg = Msg(name="orchestrator", content=instruction, role="user")
+        response = await sub_agent.reply(msg)
+        return response.get_text_content()
+
+    # spawn / query / cancel 实现同 4.5 节，此处省略
+```
+
+### 8.4 未来实现：RemoteTransport（路线图）
+
+当需要分布式部署时，实现 `RemoteTransport`，Orchestrator 的调度逻辑**无需任何修改**：
+
+```
+┌─────────────────┐       HTTP/WS/MQ        ┌──────────────────┐
+│  Orchestrator    │ ◄──── RemoteTransport ──►│  Agent 实例 (远程) │
+│  (主节点)         │                          │  独立进程/容器      │
+└─────────────────┘                          └──────────────────┘
+```
+
+`RemoteTransport` 需要解决的问题（届时再设计）：
+
+- **服务注册与发现**：Agent 实例启动时向注册中心注册，Orchestrator 动态发现可用 Agent
+- **通信协议**：HTTP REST（简单）/ WebSocket（双向）/ 消息队列（解耦），推荐先用 HTTP
+- **Agent 实例管理**：每个 Agent 实例暴露统一的 `/chat` 端点接收指令并返回结果
+- **心跳与健康检查**：检测 Agent 实例存活状态
+- **负载均衡**：同类 Agent 多实例时的请求分配
+- **序列化协议**：指令和结果的序列化格式（JSON 即可）
+
+初步设想的分布式架构：
+
+```
+                    ┌─────────────────────┐
+                    │   Registry Service   │  (Agent 注册表)
+                    └──────────┬──────────┘
+                               │
+         ┌─────────────────────┼─────────────────────┐
+         │                     │                     │
+  ┌──────▼───────┐     ┌──────▼───────┐     ┌──────▼───────┐
+  │ Machine A     │     │ Machine B     │     │ Machine C     │
+  │ Orchestrator  │     │ code-agent    │     │ writer-agent  │
+  │ + Console     │     │ (GPU)         │     │ researcher    │
+  └──────────────┘     └──────────────┘     └──────────────┘
+         │                     │                     │
+         └─────── 统一消息协议（类聊天） ─────────────┘
+```
+
+### 8.5 对当前实现的要求
+
+为确保预留有效，v0.2 实现阶段需遵守以下约束：
+
+1. **OrchestratorAgent 中所有子 Agent 调用必须经过 `AgentTransport`**，禁止直接 import 并调用 `SubAgentService.build_agent_instance()`
+2. **`transport.py` 中定义的 `RunResult` / `RunStatus` 作为统一返回类型**，Orchestrator 的调度工具只依赖这些类型
+3. **Transport 实例通过 OrchestratorAgent 构造函数注入**，不在内部硬编码
+4. **spawn 任务的状态持久化格式（`spawn_runs/{runId}.json`）与 `RunResult` 字段对齐**，方便未来 RemoteTransport 直接复用
+
+### 8.6 迁移路径
+
+```
+v0.2  单进程 LocalTransport（当前）
+  │
+  ▼  仅需新增 RemoteTransport 实现 + Agent 实例启动脚本
+v0.3  单机多进程（同一台机器上多个 Agent 进程，通过 localhost HTTP 通信）
+  │
+  ▼  新增 Registry Service
+v0.4  多机分布式（Agent 分布在不同机器，通过网络通信）
+```
+
+每一步只需新增 Transport 实现，Orchestrator 侧零改动。
+
+---
+
+## 9. 后续扩展方向
 
 - **Agent 市场**：预定义一批子 Agent 模板（代码助手、写作助手、数据分析师等），用户一键安装
 - **Agent 间直接通信**：支持子 Agent 之间的消息传递（P2P 模式）
@@ -939,6 +1134,7 @@ Agent A 结果 → Orchestrator → 将 A 的结果作为指令一部分发给 A
 - ~~**用户直接与子 Agent 对话**：支持 `@agent_name` 语法~~（v0.2 已实现）
 - **动态 Agent 创建**：Orchestrator 可以在运行时创建临时子 Agent 处理特定任务
 - **spawn 任务管理 UI**：在 Console 中展示 spawn 任务的实时状态、结果、取消操作
+- **分布式多实例部署**：通过 RemoteTransport 实现跨机器 Agent 集群（详见第 8 节）
 
 ---
 
