@@ -206,6 +206,18 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
   > = new Map();
   private sessionCacheTimeout: number = 5000;
 
+  /**
+   * Stores the most recently synced live messages for a session (from
+   * syncSessionMessages / updateSession calls). Used to restore the
+   * in-progress UI state when the user switches back to a session whose
+   * task has not yet completed. No expiry — superseded only when the
+   * backend confirms a more complete message list.
+   */
+  private liveSessionMessages: Map<
+    string,
+    IAgentScopeRuntimeWebUIMessage[]
+  > = new Map();
+
   constructor() {
     this.lsKey = "agent-scope-runtime-webui-sessions";
     this.sessionList = [];
@@ -234,9 +246,14 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
   }
 
   private getLocalSession(sessionId: string): IAgentScopeRuntimeWebUISession {
+    // Prefer live messages (in-progress state) over the empty sessionList entry
+    const live = this.liveSessionMessages.get(sessionId);
     const localSession = this.sessionList.find((s) => s.id === sessionId);
     if (localSession) {
       this.updateWindowVariables(localSession as ExtendedSession);
+      if (live && live.length > 0) {
+        return { ...localSession, messages: live };
+      }
       return localSession;
     }
     return this.createEmptySession(sessionId);
@@ -300,6 +317,11 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
 
       if (cached && now - cached.timestamp < this.sessionCacheTimeout) {
         this.updateWindowVariables(cached.session as ExtendedSession);
+        // If we have a more complete live state, overlay it onto the cached session
+        const live = this.liveSessionMessages.get(sessionId);
+        if (live && live.length > cached.session.messages.length) {
+          return { ...cached.session, messages: live };
+        }
         return cached.session;
       }
 
@@ -332,10 +354,25 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
     sessionId: string,
   ): Promise<IAgentScopeRuntimeWebUISession> {
     const chatHistory = await api.getChat(sessionId);
+    const backendMessages = convertMessages(chatHistory.messages || []);
 
     const chatSpec = this.sessionList.find((s) => s.id === sessionId) as
       | ExtendedSession
       | undefined;
+
+    // If we have live messages (task in progress) with more content than what
+    // the backend returned, keep the live state so the user sees their pending
+    // message rather than an empty / pre-task history.
+    const live = this.liveSessionMessages.get(sessionId);
+    let messages: IAgentScopeRuntimeWebUIMessage[];
+    if (live && live.length > backendMessages.length) {
+      // Backend hasn't caught up yet — task still in progress
+      messages = live;
+    } else {
+      // Backend is at least as complete as live state: use backend truth
+      messages = backendMessages;
+      this.liveSessionMessages.delete(sessionId);
+    }
 
     const session = {
       id: sessionId,
@@ -343,7 +380,7 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
       sessionId: chatSpec?.sessionId || sessionId,
       userId: chatSpec?.userId || "default",
       channel: chatSpec?.channel || "console",
-      messages: convertMessages(chatHistory.messages || []),
+      messages,
       meta: chatSpec?.meta || {},
     } as ExtendedSession;
 
@@ -358,6 +395,13 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
   }
 
   async updateSession(session: Partial<IAgentScopeRuntimeWebUISession>) {
+    // Persist the live message state BEFORE clearing it from the localStorage
+    // snapshot.  This is what gets returned by getSession when the user
+    // switches back to this session while a task is still in progress.
+    if (session.id && Array.isArray(session.messages) && session.messages.length > 0) {
+      this.liveSessionMessages.set(session.id, [...session.messages]);
+    }
+
     session.messages = [];
     const index = this.sessionList.findIndex((item) => item.id === session.id);
     if (index > -1) {
@@ -402,6 +446,8 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
       this.sessionList = this.sessionList.filter(
         (item) => item.id !== sessionId,
       );
+      this.liveSessionMessages.delete(sessionId);
+      this.sessionCache.delete(sessionId);
 
       localStorage.setItem(this.lsKey, JSON.stringify(this.sessionList));
       this.lastFetchTime = Date.now();
@@ -411,6 +457,8 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
         this.sessionList = this.sessionList.filter(
           (item) => item.id !== session.id,
         );
+        this.liveSessionMessages.delete(session.id);
+        this.sessionCache.delete(session.id);
         localStorage.setItem(this.lsKey, JSON.stringify(this.sessionList));
         this.lastFetchTime = Date.now();
       }

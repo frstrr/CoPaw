@@ -1,0 +1,167 @@
+diff --git a/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatController.js b/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatController.js
+index fa6281b..c9371b3 100644
+--- a/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatController.js
++++ b/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatController.js
+@@ -25,6 +25,10 @@ export default function useChatController() {
+     return v.currentSessionId;
+   });
+   var currentQARef = useRef({});
++  // Per-session QA state map: saves/restores request+response+abortController
++  // when the user switches between sessions mid-stream.
++  var sessionQAMapRef = useRef({});
++  var qaSessionIdRef = useRef(undefined);
+ 
+   // 消息处理
+   var messageHandler = useChatMessageHandler({
+@@ -37,15 +41,25 @@ export default function useChatController() {
+   /**
+    * 完成响应
+    */
+-  var finishResponse = useCallback(function () {
+-    var status = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : 'finished';
++  var finishResponse = useCallback(function (status, requestSid) {
++    var _status = status !== undefined ? status : 'finished';
++    var activeSid = sessionHandler.getCurrentSessionId();
++    var isBackground = requestSid != null && requestSid !== activeSid;
++    if (isBackground) {
++      // Stream completed while the user was on a different session.
++      // Clean up the per-session QA slot; the backend has the final result
++      // and sessionApi.liveSessionMessages holds the user's message for display.
++      if (requestSid != null) { delete sessionQAMapRef.current[requestSid]; }
++      return;
++    }
+     if (!currentQARef.current.response) return;
+-    currentQARef.current.response.msgStatus = status;
++    currentQARef.current.response.msgStatus = _status;
+     setLoading(false);
+     ReactDOM.flushSync(function () {
+       messageHandler.updateMessage(currentQARef.current.response);
+     });
+     sessionHandler.syncSessionMessages(messageHandler.getMessages());
++    if (requestSid != null) { delete sessionQAMapRef.current[requestSid]; }
+   }, [setLoading, messageHandler, sessionHandler]);
+ 
+   // API 请求处理
+@@ -53,8 +67,8 @@ export default function useChatController() {
+       currentQARef: currentQARef,
+       updateMessage: messageHandler.updateMessage,
+       getCurrentSessionId: sessionHandler.getCurrentSessionId,
+-      onFinish: function onFinish() {
+-        return finishResponse('finished');
++      onFinish: function onFinish(requestSid) {
++        return finishResponse('finished', requestSid);
+       }
+     }),
+     request = _useChatRequest.request;
+@@ -140,8 +154,8 @@ export default function useChatController() {
+    * 处理取消
+    */
+   var handleCancel = useCallback(function () {
+-    finishResponse('interrupted');
+-  }, [finishResponse]);
++    finishResponse('interrupted', sessionHandler.getCurrentSessionId());
++  }, [finishResponse, sessionHandler]);
+ 
+   /**
+    * 处理重新生成
+@@ -176,13 +190,25 @@ export default function useChatController() {
+     };
+   }(), [messageHandler, request]);
+ 
+-  // 监听会话切换，重置状态
++  // 监听会话切换：保存旧 session 的 QA 状态，恢复新 session 的 QA 状态
++  // 这样切回时 stream 可以继续更新 UI，而不是丢失进度
+   useEffect(function () {
+-    currentQARef.current = {
++    var prevSid = qaSessionIdRef.current;
++    if (prevSid != null) {
++      // 保存当前 session 的 QA 状态（可能正在 stream 中）
++      sessionQAMapRef.current[prevSid] = {
++        request: currentQARef.current.request,
++        response: currentQARef.current.response,
++        abortController: currentQARef.current.abortController
++      };
++    }
++    // 恢复新 session 的 QA 状态（如有），否则创建空状态
++    currentQARef.current = sessionQAMapRef.current[currentSessionId] || {
+       request: undefined,
+       response: undefined,
+       abortController: undefined
+     };
++    qaSessionIdRef.current = currentSessionId;
+   }, [currentSessionId]);
+ 
+   // 监听重新生成事件
+diff --git a/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatRequest.js b/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatRequest.js
+index dcc7386..1764f59 100644
+--- a/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatRequest.js
++++ b/node_modules/@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Chat/hooks/useChatRequest.js
+@@ -102,13 +102,18 @@ export default function useChatRequest(options) {
+   }(), []);
+   var request = useCallback( /*#__PURE__*/function () {
+     var _ref2 = _asyncToGenerator( /*#__PURE__*/_regeneratorRuntime().mark(function _callee2(historyMessages, biz_params) {
+-      var currentApiOptions, _currentApiOptions$en, enableHistoryMessages, response, agentScopeRuntimeResponseBuilder, _iteratorAbruptCompletion2, _didIteratorError2, _iteratorError2, _iterator2, _step2, chunk, _currentQARef$current, _res$output, _currentQARef$current2, responseParser, chunkData, res;
++      var currentApiOptions, _currentApiOptions$en, enableHistoryMessages, response, agentScopeRuntimeResponseBuilder, _iteratorAbruptCompletion2, _didIteratorError2, _iteratorError2, _iterator2, _step2, chunk, _currentQARef$current, _res$output, _currentQARef$current2, responseParser, chunkData, res, capturedQAState, capturedSessionId;
+       return _regeneratorRuntime().wrap(function _callee2$(_context2) {
+         while (1) switch (_context2.prev = _context2.next) {
+           case 0:
+             // 使用 ref.current 获取最新的 apiOptions
+             currentApiOptions = apiOptionsRef.current;
+             _currentApiOptions$en = currentApiOptions.enableHistoryMessages, enableHistoryMessages = _currentApiOptions$en === void 0 ? false : _currentApiOptions$en;
++            // 请求发起时捕获 QA 状态和 session ID。
++            // 切换 session 后 currentQARef.current 会变为新 session 的状态，
++            // 而 capturedQAState 始终指向本次请求所属的那个对象。
++            capturedQAState = currentQARef.current;
++            capturedSessionId = getCurrentSessionId();
+             _context2.prev = 2;
+             if (!currentApiOptions.fetch) {
+               _context2.next = 9;
+@@ -196,21 +201,21 @@ export default function useChatRequest(options) {
+               break;
+             }
+             chunk = _step2.value;
+-            if (!(((_currentQARef$current = currentQARef.current.response) === null || _currentQARef$current === void 0 ? void 0 : _currentQARef$current.msgStatus) === 'interrupted')) {
++            if (!(((_currentQARef$current = capturedQAState.response) === null || _currentQARef$current === void 0 ? void 0 : _currentQARef$current.msgStatus) === 'interrupted')) {
+               _context2.next = 37;
+               break;
+             }
+-            (_currentQARef$current2 = currentQARef.current.abortController) === null || _currentQARef$current2 === void 0 || _currentQARef$current2.abort();
++            (_currentQARef$current2 = capturedQAState.abortController) === null || _currentQARef$current2 === void 0 || _currentQARef$current2.abort();
+             if (currentApiOptions.cancel) {
+               currentApiOptions.cancel({
+                 session_id: getCurrentSessionId()
+               });
+             }
+-            currentQARef.current.response.cards = [{
++            capturedQAState.response.cards = [{
+               code: 'AgentScopeRuntimeResponseCard',
+               data: agentScopeRuntimeResponseBuilder.cancel()
+             }];
+-            updateMessage(currentQARef.current.response);
++            updateMessage(capturedQAState.response);
+             return _context2.abrupt("break", 46);
+           case 37:
+             responseParser = apiOptionsRef.current.responseParser || JSON.parse;
+@@ -222,15 +227,17 @@ export default function useChatRequest(options) {
+             }
+             return _context2.abrupt("continue", 43);
+           case 42:
+-            if (currentQARef.current.response) {
+-              currentQARef.current.response.cards = [{
++            if (capturedQAState.response) {
++              capturedQAState.response.cards = [{
+                 code: 'AgentScopeRuntimeResponseCard',
+                 data: res
+               }];
+               if (res.status === AgentScopeRuntimeRunStatus.Completed || res.status === AgentScopeRuntimeRunStatus.Failed) {
+-                onFinish();
+-              } else {
+-                updateMessage(currentQARef.current.response);
++                // 无论当前在哪个 session，都需要通知 finishResponse 做收尾
++                onFinish(capturedSessionId);
++              } else if (capturedSessionId === getCurrentSessionId()) {
++                // 只有在同一个 session 时才更新 UI，避免干扰当前 session 的消息列表
++                updateMessage(capturedQAState.response);
+               }
+             }
+           case 43:
