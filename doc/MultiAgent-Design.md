@@ -1151,7 +1151,8 @@ v0.4  多机分布式（Agent 分布在不同机器，通过网络通信）
 
 ## 附录 B：需要新增的文件清单
 
-- `src/copaw/agents/orchestrator.py` — Orchestrator Agent 实现（dispatch + spawn + 路由）
+- `src/copaw/agents/transport.py` — AgentTransport 抽象层 + RunResult/RunStatus + LocalTransport 实现（详见第 8 节）
+- `src/copaw/agents/orchestrator.py` — Orchestrator Agent 实现（dispatch + spawn + 路由，通过 AgentTransport 调用子 Agent）
 - `src/copaw/agents/sub_agent_service.py` — 子 Agent 管理服务
 - `src/copaw/app/routers/sub_agents.py` — 子 Agent REST API + spawn 任务查询 API
 - `src/copaw/cli/agents_cmd.py` — 子 Agent CLI 命令
