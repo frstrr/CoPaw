@@ -132,6 +132,10 @@ export function SkillCard({
           </div>
         </div>
 
+        {skill.description && (
+          <div className={styles.skillDescription}>{skill.description}</div>
+        )}
+
         <div className={styles.infoSection}>
           <div className={styles.infoLabel}>{t("skills.source")}</div>
           <code className={styles.infoCode}>{skill.source}</code>
