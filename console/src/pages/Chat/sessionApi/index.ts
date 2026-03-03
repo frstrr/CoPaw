@@ -207,7 +207,14 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
   private sessionCacheTimeout: number = 5000;
 
   /**
-   * Stores the most recently synced live messages for a session (from
+   * Incremented on every non-local getSession call so that a slow async
+   * fetch started for session A cannot overwrite the active window globals
+   * after the user has already switched to session B.
+   */
+  private _sessionSelectVersion: number = 0;
+
+  /**
+   * Stores the most recently synced live messages
    * syncSessionMessages / updateSession calls). Used to restore the
    * in-progress UI state when the user switches back to a session whose
    * task has not yet completed. No expiry — superseded only when the
@@ -309,14 +316,23 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
       const isLocalTimestampId = /^\d+$/.test(sessionId);
 
       if (isLocalTimestampId) {
+        // Synchronous path — no async race possible.
         return this.getLocalSession(sessionId);
       }
+
+      // Bump version so a stale async fetch for a previously selected session
+      // won't overwrite the window globals for the current active session.
+      const myVersion = ++this._sessionSelectVersion;
 
       const cached = this.sessionCache.get(sessionId);
       const now = Date.now();
 
       if (cached && now - cached.timestamp < this.sessionCacheTimeout) {
-        this.updateWindowVariables(cached.session as ExtendedSession);
+        // Only update globals if no newer selection has happened during the
+        // (synchronous) cache lookup.
+        if (this._sessionSelectVersion === myVersion) {
+          this.updateWindowVariables(cached.session as ExtendedSession);
+        }
         // If we have a more complete live state, overlay it onto the cached session
         const live = this.liveSessionMessages.get(sessionId);
         if (live && live.length > cached.session.messages.length) {
@@ -330,7 +346,7 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
         return existingPromise;
       }
 
-      const fetchPromise = this.fetchSessionFromBackend(sessionId);
+      const fetchPromise = this.fetchSessionFromBackend(sessionId, myVersion);
       this.sessionFetchPromises.set(sessionId, fetchPromise);
 
       try {
@@ -352,6 +368,7 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
 
   private async fetchSessionFromBackend(
     sessionId: string,
+    version?: number,
   ): Promise<IAgentScopeRuntimeWebUISession> {
     const chatHistory = await api.getChat(sessionId);
     const backendMessages = convertMessages(chatHistory.messages || []);
@@ -384,7 +401,11 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
       meta: chatSpec?.meta || {},
     } as ExtendedSession;
 
-    this.updateWindowVariables(session);
+    // Only update the active-session window globals when this fetch is still
+    // the most recent selection (version matches) or was an unversioned call.
+    if (version === undefined || this._sessionSelectVersion === version) {
+      this.updateWindowVariables(session);
+    }
 
     this.sessionCache.set(sessionId, {
       session,

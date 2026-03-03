@@ -2,7 +2,7 @@ import {
   AgentScopeRuntimeWebUI,
   IAgentScopeRuntimeWebUIOptions,
 } from "@agentscope-ai/chat";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Modal, Button, Result } from "antd";
 import { ExclamationCircleOutlined, SettingOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
@@ -36,6 +36,10 @@ export default function ChatPage() {
       listenStorageChange: true,
     },
   );
+
+  // Per-session AbortControllers so we can cancel in-flight SSE streams
+  // when the user switches away or explicitly cancels.
+  const abortControllers = useRef<Map<string, AbortController>>(new Map());
 
   const handleConfigureModel = () => {
     setShowModelPrompt(false);
@@ -107,10 +111,18 @@ export default function ChatPage() {
       }
 
       const url = optionsConfig?.api?.baseURL || getApiUrl("/agent/process");
+
+      // Abort any previous in-flight request for this session, then register
+      // a fresh controller so the stream can be cancelled on session switch.
+      abortControllers.current.get(session_id)?.abort();
+      const controller = new AbortController();
+      abortControllers.current.set(session_id, controller);
+
       return fetch(url, {
         method: "POST",
         headers,
         body: JSON.stringify(requestBody),
+        signal: controller.signal,
       });
     };
 
@@ -126,8 +138,12 @@ export default function ChatPage() {
       api: {
         ...optionsConfig.api,
         fetch: customFetch,
-        cancel(data: { session_id: string }) {
-          console.log(data);
+      cancel(data: { session_id: string }) {
+          const ctrl = abortControllers.current.get(data.session_id);
+          if (ctrl) {
+            ctrl.abort();
+            abortControllers.current.delete(data.session_id);
+          }
         },
       },
       customToolRenderConfig: {
